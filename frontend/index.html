@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chennai Parking Finder</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    #map { height: 100%; width: 100%; z-index: 1; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  </style>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans overflow-hidden h-screen flex flex-col md:flex-row">
+
+  <!-- ── LEFT PANEL ─────────────────────────────── -->
+  <div class="w-full md:w-[420px] bg-gray-900 h-1/2 md:h-full flex flex-col z-10 shadow-2xl border-b md:border-b-0 md:border-r border-gray-800">
+
+    <!-- Header -->
+    <div class="p-4 border-b border-gray-800 flex flex-col gap-3">
+      <h1 class="text-xl font-bold text-blue-400 flex items-center gap-2">
+        <i data-lucide="map-pin"></i> Chennai Parking Finder
+      </h1>
+      <!-- Search -->
+      <div class="relative flex items-center bg-gray-800 rounded-xl px-3 py-2 border border-gray-700 focus-within:border-blue-500">
+        <i data-lucide="search" class="text-gray-400 mr-2 w-5 h-5"></i>
+        <input type="text" id="searchInput"
+               placeholder="Search area (e.g., T. Nagar, Central)..."
+               class="bg-transparent text-white placeholder-gray-500 outline-none w-full text-sm" />
+      </div>
+    </div>
+
+    <!-- Filter chips -->
+    <div class="flex gap-2 overflow-x-auto px-4 py-3 border-b border-gray-800 no-scrollbar select-none">
+      <button onclick="filterCategory('All',this)"    class="filter-btn active-chip px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition">All</button>
+      <button onclick="filterCategory('Metro',this)"  class="filter-btn px-3 py-1.5 bg-gray-800 text-gray-400 rounded-full text-xs font-semibold whitespace-nowrap hover:bg-gray-700 transition">Metro</button>
+      <button onclick="filterCategory('Multi-level',this)" class="filter-btn px-3 py-1.5 bg-gray-800 text-gray-400 rounded-full text-xs font-semibold whitespace-nowrap hover:bg-gray-700 transition">Multi-level</button>
+      <button onclick="filterCategory('Open lot',this)"    class="filter-btn px-3 py-1.5 bg-gray-800 text-gray-400 rounded-full text-xs font-semibold whitespace-nowrap hover:bg-gray-700 transition">Open Lot</button>
+      <button onclick="toggle24Hr(this)" id="btn24hr" class="filter-btn px-3 py-1.5 bg-gray-800 text-gray-400 rounded-full text-xs font-semibold whitespace-nowrap hover:bg-gray-700 transition">Open 24 Hrs</button>
+    </div>
+
+    <!-- Parking list -->
+    <div id="parkingList" class="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar">
+      <!-- Cards injected here by JS -->
+    </div>
+  </div>
+
+  <!-- ── MAP ───────────────────────────────────── -->
+  <div class="flex-1 h-1/2 md:h-full relative">
+    <div id="map"></div>
+
+    <!-- Loading overlay -->
+    <div id="loadingOverlay" class="absolute inset-0 bg-gray-900/80 flex flex-col items-center justify-center z-50">
+      <div class="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-3"></div>
+      <p class="text-gray-300 text-sm">Fetching parking data...</p>
+    </div>
+
+    <!-- Mobile bottom sheet -->
+    <div id="bottomSheet"
+         class="absolute bottom-0 left-0 right-0 bg-gray-900 rounded-t-3xl border-t border-gray-800 z-[1000] p-5 transform translate-y-full transition-transform duration-300 shadow-2xl max-h-[85vh] overflow-y-auto no-scrollbar md:hidden">
+      <div class="w-12 h-1.5 bg-gray-700 rounded-full mx-auto mb-4 cursor-pointer" onclick="closeDetails()"></div>
+      <div id="sheetContent"></div>
+    </div>
+
+    <!-- Desktop right panel -->
+    <div id="desktopPanel"
+         class="hidden md:block absolute top-4 right-4 bg-gray-900 rounded-2xl border border-gray-800 z-[1000] p-5 shadow-2xl w-96 transform translate-x-[450px] transition-transform duration-300 max-h-[90vh] overflow-y-auto no-scrollbar">
+      <div class="flex justify-between items-start mb-4">
+        <h3 class="text-lg font-bold text-white">Location Details</h3>
+        <button onclick="closeDetails()" class="text-gray-400 hover:text-white bg-gray-800 p-1.5 rounded-full">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <div id="panelContent"></div>
+    </div>
+  </div>
+
+
+  <script>
+    // ─────────────────────────────────────────
+    //  CONFIG — change this to your backend URL
+    //  Local:   http://localhost:3000
+    //  Deployed: https://your-app.vercel.app
+    // ─────────────────────────────────────────
+    const API_BASE = 'http://localhost:3000/api';
+
+    let currentCategory = 'All';
+    let filter24Hr      = false;
+    let map, markersGroup;
+
+
+    // ─────────────────────────────────────────
+    //  Init map on page load
+    // ─────────────────────────────────────────
+    window.onload = () => {
+      map = L.map('map', { zoomControl: false }).setView([13.045, 80.245], 12);
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+      }).addTo(map);
+      markersGroup = L.layerGroup().addTo(map);
+      fetchParking();
+    };
+
+
+    // ─────────────────────────────────────────
+    //  FETCH parking from backend API
+    //  Replaces the old hardcoded array!
+    // ─────────────────────────────────────────
+    async function fetchParking() {
+      showLoading(true);
+      try {
+        const search = document.getElementById('searchInput').value;
+
+        // Build query string from current filters
+        const params = new URLSearchParams();
+        if (search)                           params.set('search', search);
+        if (currentCategory !== 'All')        params.set('type',   currentCategory);
+        if (filter24Hr)                       params.set('open24', 'true');
+
+        const res  = await fetch(`${API_BASE}/parking?${params}`);
+        const json = await res.json();
+
+        if (!json.success) throw new Error(json.error);
+
+        renderCards(json.data);
+        renderMarkers(json.data);
+
+      } catch (err) {
+        document.getElementById('parkingList').innerHTML = `
+          <div class="text-center py-10 text-gray-500">
+            <p class="text-red-400 font-semibold mb-1">⚠️ Could not connect to server</p>
+            <p class="text-xs">Make sure your backend is running at:<br/>
+            <code class="text-blue-400">${API_BASE}</code></p>
+          </div>`;
+        console.error('API error:', err.message);
+      }
+      showLoading(false);
+    }
+
+
+    // ─────────────────────────────────────────
+    //  Render parking cards in left panel
+    // ─────────────────────────────────────────
+    function renderCards(spots) {
+      const list = document.getElementById('parkingList');
+
+      if (!spots.length) {
+        list.innerHTML = `<p class="text-gray-500 text-center text-sm py-8">No parking spots found.</p>`;
+        return;
+      }
+
+      list.innerHTML = spots.map(item => `
+        <div onclick="focusLocation(${item.id})"
+             class="p-4 bg-gray-800 rounded-xl border border-gray-700/60 hover:border-blue-500/50 cursor-pointer transition flex flex-col gap-1">
+          <div class="flex justify-between items-start">
+            <h4 class="font-bold text-white text-sm">${item.name}</h4>
+            <span class="text-[10px] px-2 py-0.5 bg-gray-700 rounded-md text-gray-300 border border-gray-600">${item.type}</span>
+          </div>
+          <p class="text-xs text-gray-400 flex items-center gap-1">
+            <i data-lucide="map-pin" class="w-3 h-3 text-gray-500"></i> ${item.area}
+          </p>
+          <div class="flex items-center gap-2 mt-1">
+            <span class="flex items-center text-yellow-500 text-xs font-bold gap-0.5">
+              <i data-lucide="star" class="w-3 h-3 fill-current"></i> ${Number(item.rating).toFixed(1)}
+            </span>
+            <span class="text-gray-500 text-xs">(${item.reviews})</span>
+            <span class="text-xs ${item.is_open_24 ? 'text-green-400' : 'text-blue-400'} ml-auto font-medium">
+              ${item.hours}
+            </span>
+          </div>
+        </div>`
+      ).join('');
+
+      lucide.createIcons();
+    }
+
+
+    // ─────────────────────────────────────────
+    //  Render map markers
+    // ─────────────────────────────────────────
+    function renderMarkers(spots) {
+      markersGroup.clearLayers();
+      spots.forEach(item => {
+        const icon = L.divIcon({
+          html: `<div class="w-7 h-7 bg-blue-600 border-2 border-white rounded-full flex items-center justify-center font-bold text-white text-xs shadow-lg">P</div>`,
+          className: '', iconSize: [28, 28], iconAnchor: [14, 14]
+        });
+        const marker = L.marker([item.lat, item.lng], { icon });
+        marker.on('click', () => focusLocation(item.id));
+        markersGroup.addLayer(marker);
+      });
+    }
+
+
+    // ─────────────────────────────────────────
+    //  Fetch single spot + show detail panel
+    // ─────────────────────────────────────────
+    async function focusLocation(id) {
+      try {
+        const res  = await fetch(`${API_BASE}/parking/${id}`);
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+
+        const item = json.data;
+        map.flyTo([item.lat, item.lng], 15, { duration: 1.5 });
+
+        // Fetch reviews for this spot
+        const revRes  = await fetch(`${API_BASE}/parking/${id}/reviews`);
+        const revJson = await revRes.json();
+        const reviews = revJson.success ? revJson.data : [];
+
+        const reviewsHTML = reviews.length
+          ? reviews.slice(0, 3).map(r => `
+              <div class="bg-gray-800 rounded-xl p-3 border border-gray-700">
+                <div class="flex items-center justify-between mb-1">
+                  <span class="font-semibold text-white text-xs">${r.author_name}</span>
+                  <span class="text-yellow-400 text-xs">${'★'.repeat(r.rating)}${'☆'.repeat(5 - r.rating)}</span>
+                </div>
+                <p class="text-gray-400 text-xs">${r.comment || ''}</p>
+              </div>`).join('')
+          : `<p class="text-gray-500 text-xs">No reviews yet. Be the first!</p>`;
+
+        const html = `
+          <div class="space-y-4 text-sm">
+            <div>
+              <h2 class="text-xl font-bold text-white mb-1">${item.name}</h2>
+              <span class="inline-block text-xs bg-blue-900/40 text-blue-300 border border-blue-800 px-2 py-0.5 rounded">${item.type}</span>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3 bg-gray-800/50 p-3 rounded-xl border border-gray-800">
+              <div>
+                <span class="text-xs text-gray-500 block">PARKING FEE</span>
+                <span class="font-semibold text-green-400 text-base">${item.fee}</span>
+              </div>
+              <div>
+                <span class="text-xs text-gray-500 block">CAPACITY</span>
+                <span class="font-semibold text-white text-base">${item.capacity}</span>
+              </div>
+            </div>
+
+            <div class="space-y-2 text-gray-300">
+              <p class="flex items-start gap-2">
+                <i data-lucide="clock" class="w-4 h-4 text-gray-500 shrink-0 mt-0.5"></i>
+                <span><strong>Hours:</strong> ${item.hours}</span>
+              </p>
+              <p class="flex items-start gap-2">
+                <i data-lucide="map-pin" class="w-4 h-4 text-gray-500 shrink-0 mt-0.5"></i>
+                <span><strong>Address:</strong> ${item.address}</span>
+              </p>
+            </div>
+
+            <!-- Reviews -->
+            <div>
+              <h4 class="text-white font-semibold mb-2 flex items-center gap-2">
+                <i data-lucide="message-circle" class="w-4 h-4 text-blue-400"></i> Reviews
+              </h4>
+              <div class="space-y-2">${reviewsHTML}</div>
+            </div>
+
+            <!-- Submit a review -->
+            <div class="bg-gray-800/60 rounded-xl p-3 border border-gray-700 space-y-2">
+              <h4 class="text-white font-semibold text-xs">Leave a Review</h4>
+              <input id="revName" type="text" placeholder="Your name"
+                     class="w-full bg-gray-700 text-white text-xs rounded-lg px-3 py-2 outline-none border border-gray-600 focus:border-blue-500" />
+              <div class="flex gap-2">
+                <select id="revRating" class="bg-gray-700 text-white text-xs rounded-lg px-2 py-2 border border-gray-600">
+                  <option value="5">★★★★★</option>
+                  <option value="4">★★★★☆</option>
+                  <option value="3">★★★☆☆</option>
+                  <option value="2">★★☆☆☆</option>
+                  <option value="1">★☆☆☆☆</option>
+                </select>
+                <input id="revComment" type="text" placeholder="Your review..."
+                       class="flex-1 bg-gray-700 text-white text-xs rounded-lg px-3 py-2 outline-none border border-gray-600 focus:border-blue-500" />
+              </div>
+              <button onclick="submitReview(${item.id})"
+                      class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 rounded-lg font-semibold transition">
+                Submit Review
+              </button>
+              <div id="revMsg" class="text-xs text-center text-green-400 hidden">✅ Review submitted! Thank you.</div>
+            </div>
+
+            <!-- Directions button -->
+            <a href="https://www.google.com/maps/search/?api=1&query=${item.lat},${item.lng}" target="_blank"
+               class="w-full bg-blue-600 text-white text-center py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition">
+              <i data-lucide="navigation" class="w-4 h-4"></i> Get Directions on Google Maps
+            </a>
+          </div>`;
+
+        document.getElementById('sheetContent').innerHTML  = html;
+        document.getElementById('panelContent').innerHTML  = html;
+        document.getElementById('bottomSheet').classList.remove('translate-y-full');
+        document.getElementById('desktopPanel').classList.remove('translate-x-[450px]');
+        lucide.createIcons();
+
+      } catch (err) {
+        console.error('focusLocation error:', err.message);
+      }
+    }
+
+
+    // ─────────────────────────────────────────
+    //  Submit a review to the backend
+    // ─────────────────────────────────────────
+    async function submitReview(parkingId) {
+      const author_name = document.getElementById('revName').value.trim();
+      const rating      = parseInt(document.getElementById('revRating').value);
+      const comment     = document.getElementById('revComment').value.trim();
+
+      if (!author_name) { alert('Please enter your name.'); return; }
+
+      try {
+        const res  = await fetch(`${API_BASE}/parking/${parkingId}/reviews`, {
+          method  : 'POST',
+          headers : { 'Content-Type': 'application/json' },
+          body    : JSON.stringify({ author_name, rating, comment })
+        });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+
+        document.getElementById('revMsg').classList.remove('hidden');
+        document.getElementById('revName').value    = '';
+        document.getElementById('revComment').value = '';
+
+        // Refresh the panel after 1.5 seconds
+        setTimeout(() => focusLocation(parkingId), 1500);
+
+      } catch (err) {
+        alert('Could not submit review: ' + err.message);
+      }
+    }
+
+
+    // ─────────────────────────────────────────
+    //  Filter helpers
+    // ─────────────────────────────────────────
+    function filterCategory(cat, btn) {
+      currentCategory = cat;
+      document.querySelectorAll('.filter-btn').forEach(b => {
+        b.classList.remove('active-chip', 'bg-blue-600', 'text-white');
+        b.classList.add('bg-gray-800', 'text-gray-400');
+      });
+      btn.classList.add('active-chip', 'bg-blue-600', 'text-white');
+      btn.classList.remove('bg-gray-800', 'text-gray-400');
+      fetchParking();
+    }
+
+    function toggle24Hr(btn) {
+      filter24Hr = !filter24Hr;
+      btn.classList.toggle('bg-blue-600',  filter24Hr);
+      btn.classList.toggle('text-white',   filter24Hr);
+      btn.classList.toggle('bg-gray-800',  !filter24Hr);
+      btn.classList.toggle('text-gray-400',!filter24Hr);
+      fetchParking();
+    }
+
+    function closeDetails() {
+      document.getElementById('bottomSheet').classList.add('translate-y-full');
+      document.getElementById('desktopPanel').classList.add('translate-x-[450px]');
+    }
+
+    function showLoading(show) {
+      document.getElementById('loadingOverlay').style.display = show ? 'flex' : 'none';
+    }
+
+    // Live search on typing
+    document.getElementById('searchInput').addEventListener('input', fetchParking);
+
+    // Apply active chip styles on load
+    document.querySelector('.filter-btn').classList.add('bg-blue-600','text-white');
+  </script>
+</body>
+</html>
